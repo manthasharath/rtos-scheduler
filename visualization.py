@@ -91,8 +91,10 @@ def _event_layers(result: SimulationResult, ev: pd.DataFrame, pos: Dict[str, int
                   until: Optional[int] = None, xref: str = "x", yref: str = "y",
                   show_preemptions: bool = True, show_migrations: bool = True):
     """Preemption markers (with 'by X' label), dotted waiting lines and migration arrows."""
+    all_ev = ev
     if until is not None:
         ev = ev[ev["Time"] <= until]
+    shown = lambda t: until is None or int(t) <= until
     lab = lambda c: _core_label(result, int(c))
     traces, arrows = [], []
     pre = ev[ev["Event"] == "Preemption"] if show_preemptions else ev.iloc[0:0]
@@ -100,13 +102,15 @@ def _event_layers(result: SimulationResult, ev: pd.DataFrame, pos: Dict[str, int
         x=list(pre["Time"]), y=[lab(c) for c in pre["Core"]], mode="markers", name="Preemption ▼",
         marker=dict(symbol="triangle-down", size=14, color="#111", line=dict(color="white", width=1.5)),
         hovertext=list(pre["Text"]), hovertemplate="<b>PREEMPTION</b> at t=%{x}<br>%{hovertext}<extra></extra>"))
-    if len(pre) <= 40:                     # "by X" label in a small white box: readable in light and dark mode
-        for _, r in pre.iterrows():
+    all_pre = all_ev[all_ev["Event"] == "Preemption"] if show_preemptions else all_ev.iloc[0:0]
+    if len(all_pre) <= 40:                 # "by X" label in a small white box: readable in light and dark mode
+        for _, r in all_pre.iterrows():
             if isinstance(r["By"], str):
                 arrows.append(dict(x=int(r["Time"]), y=pos[lab(r["Core"])] + 0.3, xref=xref, yref=yref,
-                                   text=f"by {r['By']}", showarrow=False, yanchor="bottom",
+                                   text=f"by {r['By']}", showarrow=False, yanchor="bottom", xanchor="center",
                                    font=dict(size=11, color="#111"), bgcolor="rgba(255,255,255,0.92)",
-                                   bordercolor="#555", borderwidth=1, borderpad=2, hovertext=r["Text"]))
+                                   bordercolor="#555", borderwidth=1, borderpad=2, hovertext=r["Text"],
+                                   visible=shown(r["Time"])))
     res = ev[ev["Event"] == "Resume"] if show_preemptions else ev.iloc[0:0]
     xs, ys = [], []
     for _, r in res.iterrows():
@@ -115,12 +119,14 @@ def _event_layers(result: SimulationResult, ev: pd.DataFrame, pos: Dict[str, int
     traces.append(go.Scatter(x=xs, y=ys, mode="lines", name="Waiting (preempted)", hoverinfo="skip",
                              line=dict(color="#888", width=2, dash="dot")))
     mig = ev[ev["Event"] == "Migration"] if show_migrations else ev.iloc[0:0]
-    for _, r in mig.iterrows():
+    all_mig = all_ev[all_ev["Event"] == "Migration"] if show_migrations else all_ev.iloc[0:0]
+    for _, r in all_mig.iterrows():
         arrows.append(dict(
             x=int(r["Time"]), y=pos[lab(r["To core"])], ax=int(r["Since"]), ay=pos[lab(r["Core"])],
             xref=xref, yref=yref, axref=xref, ayref=yref, text="", showarrow=True, arrowhead=2, arrowsize=1.3,
             arrowwidth=2.2, arrowcolor=job_color.get(r["Job"], "#222"), standoff=3, startstandoff=3,
-            hovertext=f"t={int(r['Time'])}: {r['Text']}"))
+            bgcolor="rgba(0,0,0,0)", borderwidth=0, hovertext=f"t={int(r['Time'])}: {r['Text']}",
+            visible=shown(r["Time"])))
     traces.append(go.Scatter(
         x=list(mig["Time"]), y=[lab(c) for c in mig["To core"]], mode="markers", name="Migration →",
         marker=dict(symbol="diamond", size=10, color="white", line=dict(color="#222", width=2)),
@@ -239,7 +245,7 @@ def animated_gantt(results: Dict[str, SimulationResult], frame_ms: int = 150, co
         return d
 
     def state_at(tau):
-        traces, anns = [], []
+        traces, anns, ev_anns = [], [], []
         for i, (r, a) in enumerate(zip(res, per_alg)):
             xr, yr = ("x", "y") if i == 0 else (f"x{i + 1}", f"y{i + 1}")
             d = bar_data(a["segs"], tau)
@@ -258,7 +264,7 @@ def animated_gantt(results: Dict[str, SimulationResult], frame_ms: int = 150, co
             for tr in layers:
                 tr.showlegend = False
                 traces.append(tr)
-            anns += arrows
+            ev_anns.extend(arrows)
             ev = a["ev"][a["ev"]["Time"] <= tau]
             npre = int((ev["Event"] == "Preemption").sum())
             nmig = int((ev["Event"] == "Migration").sum())
@@ -267,10 +273,12 @@ def animated_gantt(results: Dict[str, SimulationResult], frame_ms: int = 150, co
             last = (f"t={int(key['Time'].iloc[-1])}: {key['Text'].iloc[-1]}" if len(key)
                     else "no preemption or migration yet")
             t_ann = dict(title_anns[i].to_plotly_json())
+            t_ann.update(bgcolor="rgba(0,0,0,0)", bordercolor="rgba(0,0,0,0)", borderwidth=0, visible=True,
+                         showarrow=False)
             t_ann["text"] = (f"<b>{r.algorithm} · {r.mode_name}</b>  —  t = {tau} · preemptions {npre} · "
                              f"migrations {nmig} · misses {nmiss}<br><span style='font-size:13px'>{last}</span>")
             anns.append(t_ann)
-        return traces, anns
+        return traces, anns + ev_anns
 
     def cursor(tau):
         return [dict(type="line", x0=tau, x1=tau, xref=f"x{i + 1}" if i else "x", y0=0, y1=1,
