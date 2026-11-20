@@ -1,0 +1,16 @@
+Name,Type,C,T,D,Priority,Criticality,Arrival
+EngineCtl,P,2,5,5,1,High,
+BrakeCtl,P,3,10,10,2,High,
+Airbag,P,2,20,10,5,High,
+SteeringCtl,P,4,20,20,6,High,
+BrakePedal,S,1,10,5,3,High,
+CollisionAlert,S,2,20,10,7,High,
+CruiseCtl,P,5,20,20,8,Medium,
+SensorFusion,P,4,10,10,4,Medium,
+BatteryMon,P,5,50,50,9,Medium,
+Dashboard,P,10,50,50,10,Low,
+DataLogger,P,20,100,100,12,Low,
+Infotainment,P,15,50,50,11,Low,
+DiagScan,A,6,,,,,12
+OTACheck,A,8,,,,,40
+FaultLog,A,3,,,,,65

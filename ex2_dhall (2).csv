@@ -1,0 +1,4 @@
+Name,Type,C,T,D,Priority,Criticality,Arrival
+L1,P,2,10,10,1,Low,
+L2,P,2,10,10,2,Low,
+H,P,10,11,11,3,Medium,

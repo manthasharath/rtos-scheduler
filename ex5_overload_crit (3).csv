@@ -1,0 +1,9 @@
+Name,Type,C,T,D,Priority,Criticality,Arrival
+Sensor1,P,2,5,5,1,Medium,
+Logger1,P,3,5,5,2,Low,
+Control1,P,3,5,5,3,Medium,
+Planner,P,14,20,20,7,Medium,
+SafetyMon,P,13,20,20,8,High,
+MotorCtl,P,5,10,10,6,High,
+Logger2,P,3,5,5,4,Low,
+Watchdog,P,3,5,5,5,High,
