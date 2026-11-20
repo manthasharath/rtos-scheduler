@@ -96,13 +96,17 @@ def _event_layers(result: SimulationResult, ev: pd.DataFrame, pos: Dict[str, int
     lab = lambda c: _core_label(result, int(c))
     traces, arrows = [], []
     pre = ev[ev["Event"] == "Preemption"] if show_preemptions else ev.iloc[0:0]
-    few = len(pre) <= 40
     traces.append(go.Scatter(
-        x=list(pre["Time"]), y=[lab(c) for c in pre["Core"]], mode="markers+text" if few else "markers",
-        name="Preemption ▼", text=[f"by {b}" if isinstance(b, str) else "" for b in pre["By"]] if few else None,
-        textposition="top center", textfont=dict(size=10, color="#222"),
-        marker=dict(symbol="triangle-down", size=12, color="#333", line=dict(color="white", width=1)),
+        x=list(pre["Time"]), y=[lab(c) for c in pre["Core"]], mode="markers", name="Preemption ▼",
+        marker=dict(symbol="triangle-down", size=14, color="#111", line=dict(color="white", width=1.5)),
         hovertext=list(pre["Text"]), hovertemplate="<b>PREEMPTION</b> at t=%{x}<br>%{hovertext}<extra></extra>"))
+    if len(pre) <= 40:                     # "by X" label in a small white box: readable in light and dark mode
+        for _, r in pre.iterrows():
+            if isinstance(r["By"], str):
+                arrows.append(dict(x=int(r["Time"]), y=pos[lab(r["Core"])] + 0.3, xref=xref, yref=yref,
+                                   text=f"by {r['By']}", showarrow=False, yanchor="bottom",
+                                   font=dict(size=11, color="#111"), bgcolor="rgba(255,255,255,0.92)",
+                                   bordercolor="#555", borderwidth=1, borderpad=2, hovertext=r["Text"]))
     res = ev[ev["Event"] == "Resume"] if show_preemptions else ev.iloc[0:0]
     xs, ys = [], []
     for _, r in res.iterrows():
@@ -177,7 +181,7 @@ def gantt_chart(result: SimulationResult, show_idle: bool = True, window: Option
             marker=dict(color=color, line=dict(color="white", width=1),
                         pattern=dict(shape=pattern, fgcolor="white", size=6, fillmode="overlay") if pattern else None),
             text=d["Job"], textposition="inside", insidetextanchor="middle", textangle=0,
-            textfont=dict(color="white", size=10), customdata=_custom(d), hovertemplate=HOVER,
+            textfont=dict(color="white", size=12), customdata=_custom(d), hovertemplate=HOVER,
         ))
     order = core_order[::-1]
     pos = {c: i for i, c in enumerate(order)}
@@ -194,12 +198,12 @@ def gantt_chart(result: SimulationResult, show_idle: bool = True, window: Option
             x=mx, y=my, mode="markers", name="Deadline miss",
             marker=dict(symbol="x", size=13, color=MISS_COLOR, line=dict(width=1, color="white")),
             text=mt, hovertemplate="<b>DEADLINE MISS</b><br>%{text}<extra></extra>"))
-    fig.update_layout(barmode="overlay", bargap=0.3, uniformtext=dict(mode="hide", minsize=8))
-    fig.update_yaxes(categoryorder="array", categoryarray=core_order[::-1], title=None)
+    fig.update_layout(barmode="overlay", bargap=0.45, uniformtext=dict(mode="hide", minsize=9))
+    fig.update_yaxes(categoryorder="array", categoryarray=core_order[::-1], title=None, tickfont=dict(size=13))
     x_range = list(window) if window else [0, result.horizon]
     n_legend = len(fig.data)
     _base_layout(fig, title or f"{result.algorithm} · {result.mode_name}",
-                 height=190 + 46 * result.num_cores + 22 * math.ceil(n_legend / 6), x_range=x_range)
+                 height=210 + 72 * result.num_cores + 22 * math.ceil(n_legend / 6), x_range=x_range)
     fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.16 - 0.01 * n_legend, x=0, xanchor="left"),
                       margin=dict(l=10, r=10, t=50, b=40 + 22 * math.ceil(n_legend / 6)))
     return fig
@@ -242,7 +246,7 @@ def animated_gantt(results: Dict[str, SimulationResult], frame_ms: int = 150, co
             traces.append(go.Bar(y=d["CoreLabel"], x=d["Duration"], base=d["Start"], orientation="h",
                                  marker=dict(color=d["Color"], line=dict(color="white", width=1)),
                                  text=d["Job"], textposition="inside", insidetextanchor="middle", textangle=0,
-                                 textfont=dict(color="white", size=10), customdata=_custom(d),
+                                 textfont=dict(color="white", size=12), customdata=_custom(d),
                                  hovertemplate=HOVER, showlegend=False))
             mx, my, mt = _miss_points(r, until=tau)
             traces.append(go.Scatter(x=mx, y=my, mode="markers", text=mt, showlegend=False,
@@ -264,7 +268,7 @@ def animated_gantt(results: Dict[str, SimulationResult], frame_ms: int = 150, co
                     else "no preemption or migration yet")
             t_ann = dict(title_anns[i].to_plotly_json())
             t_ann["text"] = (f"<b>{r.algorithm} · {r.mode_name}</b>  —  t = {tau} · preemptions {npre} · "
-                             f"migrations {nmig} · misses {nmiss}<br><span style='font-size:11px'>{last}</span>")
+                             f"migrations {nmig} · misses {nmiss}<br><span style='font-size:13px'>{last}</span>")
             anns.append(t_ann)
         return traces, anns
 
@@ -278,7 +282,8 @@ def animated_gantt(results: Dict[str, SimulationResult], frame_ms: int = 150, co
     for k, tr in enumerate(full_traces):
         fig.add_trace(tr, row=k // per + 1, col=1)
     for i, (r, a) in enumerate(zip(res, per_alg)):
-        fig.update_yaxes(categoryorder="array", categoryarray=a["order"], row=i + 1, col=1, gridcolor=GRID)
+        fig.update_yaxes(categoryorder="array", categoryarray=a["order"], row=i + 1, col=1, gridcolor=GRID,
+                         tickfont=dict(size=13))
         fig.update_xaxes(range=[0, H], gridcolor=GRID, row=i + 1, col=1)
     fig.update_xaxes(title="Time (units)", row=n, col=1)
     frames = []
@@ -290,9 +295,9 @@ def animated_gantt(results: Dict[str, SimulationResult], frame_ms: int = 150, co
     anim = dict(frame=dict(duration=frame_ms, redraw=True), transition=dict(duration=0), mode="immediate",
                 fromcurrent=True)
     fig.update_layout(
-        barmode="overlay", bargap=0.3, height=200 + sum(44 * h + 80 for h in heights),
+        barmode="overlay", bargap=0.45, height=220 + sum(72 * h + 90 for h in heights),
         margin=dict(l=10, r=10, t=130, b=40), plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        uniformtext=dict(mode="hide", minsize=8), showlegend=False,
+        uniformtext=dict(mode="hide", minsize=9), showlegend=False, font=dict(size=13),
         updatemenus=[dict(type="buttons", direction="left", x=0, y=1.0, xanchor="left", yanchor="bottom",
                           pad=dict(b=70, r=6), showactive=False, buttons=[
                               dict(label="⏮ Play from start", method="animate",
