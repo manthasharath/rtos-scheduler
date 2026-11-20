@@ -20,7 +20,7 @@ from examples import DEFAULT_EXAMPLE, EXAMPLES
 from experiments import run_batch
 from export_results import to_csv_bytes, to_excel_bytes
 from metrics import (aperiodic_table, comparison_table, compute_metrics, criticality_metrics, high_check_table,
-                     job_table, mode_comparison, task_metrics, timeline_segments)
+                     job_table, mode_comparison, schedule_events, task_metrics, timeline_segments)
 from task_generator import generate_taskset
 from task_model import (MAX_CORES, MAX_TASKS, TASK_COLUMNS, clean_task_table, display_table, fill_priorities,
                         hyperperiod, read_task_csv,
@@ -512,8 +512,13 @@ def page_results():
                                     default="task" if n_rt <= 8 else "criticality",
                                     help="With more than 8 tasks colours repeat, so colouring by criticality is clearer. "
                                          "Hover a bar for its job.") or "task"
-    tabs = st.tabs(["Gantt (full)", "Gantt (animated)", "Per task", "By criticality", "Aperiodic", "Design-time tests",
-                    "Jobs"])
+    o1, o2, _ = st.columns([1, 1, 2])
+    show_pre = o1.checkbox("Show preemptions ▼", True, help="▼ where a job is stopped, 'by X' = the job that took "
+                           "its core; dotted line = waiting until it resumes on the same core")
+    show_mig = o2.checkbox("Show migrations →", True, help="Arrow from the core where a job stopped to the core "
+                           "where it continues")
+    tabs = st.tabs(["Gantt (full)", "Gantt (animated)", "Events (why)", "Per task", "By criticality", "Aperiodic",
+                    "Design-time tests", "Jobs"])
     with tabs[0]:
         H = max(r.horizon for r in res.values())
         if H > 40:
@@ -521,37 +526,53 @@ def page_results():
         else:
             lo, hi = 0, H
         for name, r in res.items():
-            plot(gantt_chart(r, window=(lo, hi), color_by=color_by), key=f"g_{name}")
-        st.caption("◆ migration · ▼ preemption · ✕ deadline miss · hatched grey = aperiodic job in idle time")
+            plot(gantt_chart(r, window=(lo, hi), color_by=color_by, show_preemptions=show_pre,
+                             show_migrations=show_mig), key=f"g_{name}")
+        st.caption("▼ preempted (label = by which job) · dotted line = waiting, then resumes on the same core · "
+                   "arrow → = migration to another core · ✕ deadline miss · hatched grey = aperiodic job. "
+                   "Hover any mark for the reason.")
     with tabs[1]:
         a, b = st.columns([2, 3])
         speed = a.slider("Speed (ms per frame)", 30, 800, 150, 10)
         b.markdown("Press **⏮ Play from start** inside the chart. All chosen algorithms build in sync; "
                    "drag the time slider to any moment.")
-        plot(animated_gantt(res, frame_ms=speed, color_by=color_by), key="anim")
+        plot(animated_gantt(res, frame_ms=speed, color_by=color_by, show_preemptions=show_pre,
+                            show_migrations=show_mig), key="anim")
+        st.caption("Above each chart: live counters and the latest preemption / migration with its reason.")
     with tabs[2]:
+        a, b = st.columns([1, 2])
+        alg = a.selectbox("Algorithm", list(res), key="ev_alg")
+        kinds = b.multiselect("Show", ["Preemption", "Migration", "Resume", "Deadline miss", "Release", "Finish"],
+                              default=["Preemption", "Migration", "Deadline miss"], key="ev_kinds")
+        ev = schedule_events(res[alg])
+        ev = ev[ev["Event"].isin(kinds)]
+        st.dataframe(ev[["Time", "Event", "Text", "Job", "Core", "To core", "By", "Reason"]], hide_index=True,
+                     width="stretch", height=420)
+        st.caption("Every preemption with the job that caused it and the reason (earlier deadline, High "
+                   "criticality first, or idle-time-only aperiodic job), and every migration from core to core.")
+    with tabs[3]:
         for name, r in res.items():
             st.markdown(f"**{name}**")
             st.dataframe(task_metrics(r), hide_index=True, width="stretch")
-    with tabs[3]:
+    with tabs[4]:
         crit = pd.concat([criticality_metrics(r) for r in res.values()], ignore_index=True)
         st.dataframe(crit, hide_index=True, width="stretch")
         plot(criticality_bar(crit), key="critbar")
-    with tabs[4]:
+    with tabs[5]:
         ap = pd.concat([aperiodic_table(r) for r in res.values()], ignore_index=True)
         if len(ap):
             st.dataframe(ap, hide_index=True, width="stretch")
             st.caption("Background service: aperiodic jobs only use cores left idle by periodic/sporadic jobs.")
         else:
             st.info("This task set has no aperiodic (Type A) jobs.")
-    with tabs[5]:
+    with tabs[6]:
         for name, r in res.items():
             at = r.analytic_test
             st.markdown(f"**{name}** — {at['name']}: {badge('PASSED' if at['passed'] else 'NOT PASSED', 'ok' if at['passed'] else 'bad')}",
                         unsafe_allow_html=True)
             st.caption(at["detail"])
             st.dataframe(high_check_table(r), hide_index=True, width="stretch")
-    with tabs[6]:
+    with tabs[7]:
         st.dataframe(pd.concat([job_table(r) for r in res.values()], ignore_index=True), hide_index=True,
                      width="stretch")
 

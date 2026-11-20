@@ -149,3 +149,18 @@ def test_fields_not_used_are_cleared():
     assert int(clean.loc[1, "Arrival"]) == 5
     tasks, errors, warnings = validate_task_table(clean)
     assert not errors and not warnings and len(tasks) == 2
+
+
+@pytest.mark.parametrize("alg", ALGORITHMS)
+def test_event_log_matches_preemption_and_migration_counts(alg):
+    from metrics import schedule_events
+    rng = np.random.default_rng(3)
+    for _ in range(15):
+        tasks = generate_taskset(7, float(rng.uniform(2.0, 4.4)), rng, periods=(10, 20, 25, 50),
+                                 sporadic_frac=0.3, n_aperiodic=2)
+        for crit in (False, True):
+            r = run_algorithm(alg, tasks, 4, min(hyperperiod(tasks), 200), 2, crit_mode=crit)
+            ev, m = schedule_events(r), compute_metrics(r)
+            rt = {j.label for j in r.jobs}
+            assert ((ev["Event"] == "Preemption") & ev["Job"].isin(rt)).sum() == m["Preemptions"]
+            assert ((ev["Event"] == "Migration") & ev["Job"].isin(rt)).sum() == m["Migrations"]

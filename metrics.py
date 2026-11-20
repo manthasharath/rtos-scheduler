@@ -332,3 +332,91 @@ def mode_comparison(tasks, num_cores, horizon, cluster_size, miss_policy, gap_pc
                          "Avg response": m["Average response time"],
                          "Aperiodic avg response": m["Aperiodic avg response"]})
     return pd.DataFrame(rows)
+
+
+# --------------------------------------------------------------------------
+# Scheduling events (for the Gantt arrows, markers and the event log)
+# --------------------------------------------------------------------------
+def _preempt_reason(victim, by, crit_mode: bool) -> str:
+    if by is None:
+        return "more urgent jobs took all cores of its group"
+    if victim.kind == "A":
+        return "aperiodic jobs only use idle cores; a real-time job needs this core"
+    if crit_mode and by.crit_rank == 3 and victim.crit_rank != 3:
+        return "High-criticality jobs run first (criticality-first EDF)"
+    if by.abs_deadline < victim.abs_deadline:
+        return f"earlier deadline ({by.abs_deadline} < {victim.abs_deadline})"
+    if by.abs_deadline == victim.abs_deadline:
+        return f"same deadline ({by.abs_deadline}); tie broken by criticality, then priority"
+    return "higher place in the EDF queue"
+
+
+def schedule_events(result: SimulationResult) -> pd.DataFrame:
+    """
+    One row per event: Release, Preemption (who stopped it and why), Resume (same core,
+    after waiting), Migration (from core -> to core), Finish, Deadline miss.
+    Columns: Time, Event, Job, Task, Core, To core, By, Reason, Text.
+    """
+    H = result.horizon
+    jm = result.job_map()
+    segs = defaultdict(list)
+    for core in sorted(result.timeline):
+        row = result.timeline[core]
+        s = 0
+        for t in range(1, H + 1):
+            if t == H or row[t] != row[s]:
+                if row[s] is not None:
+                    segs[row[s]].append((s, t, core))
+                s = t
+    rows = []
+
+    def add(t, ev, job, core, to=None, by=None, reason="", text="", since=None):
+        rows.append({"Time": t, "Event": ev, "Job": job.label, "Task": job.task_name, "Core": core,
+                     "To core": to, "By": by.label if by is not None else None, "Reason": reason, "Text": text,
+                     "Since": since})
+
+    for j in result.jobs + result.aperiodic_jobs:
+        if j.release < H:
+            dl = "" if j.kind == "A" else f" (deadline {j.abs_deadline})"
+            add(j.release, "Release", j, None, text=f"{j.label} released{dl}")
+        if j.missed and j.abs_deadline <= H:
+            done_by = sum(max(0, min(e, j.abs_deadline) - s) for s, e, _ in segs.get(j.key, []))
+            add(j.abs_deadline, "Deadline miss", j, j.last_core,
+                text=f"{j.label} MISSED its deadline {j.abs_deadline} (only {done_by} of {j.wcet} done by then)")
+    for key, lst in segs.items():
+        j = jm[key]
+        lst.sort()
+        done = 0
+        for i, (s, e, c) in enumerate(lst):
+            if i:
+                ps, pe, pc = lst[i - 1]
+                if pc != c:
+                    wait = f" after waiting {s - pe}" if s > pe else ""
+                    add(s, "Migration", j, pc, to=c, since=pe,
+                        text=f"{j.label} MIGRATED Core {pc} → Core {c}{wait}")
+                elif s > pe:
+                    add(s, "Resume", j, c, since=pe, text=f"{j.label} resumes on Core {c} after waiting {s - pe}")
+            done += e - s
+            if done >= j.wcet:
+                add(e, "Finish", j, c, text=f"{j.label} finished on Core {c}")
+                continue
+            nxt = lst[i + 1] if i + 1 < len(lst) else None
+            if e >= H or (nxt is not None and nxt[0] == e):
+                continue                      # horizon end, or keeps running on another core
+            if j.aborted and e >= j.abs_deadline:
+                continue                      # dropped at its deadline (shown as a miss)
+            by_key = result.timeline[c][e] if e < H else None
+            by = jm.get(by_key) if by_key is not None else None
+            reason = _preempt_reason(j, by, result.crit_mode)
+            who = f" by {by.label}" if by is not None else ""
+            add(e, "Preemption", j, c, by=by, reason=reason,
+                text=f"Core {c}: {j.label} preempted{who} — {reason}")
+    order = {"Deadline miss": 0, "Finish": 1, "Preemption": 2, "Release": 3, "Migration": 4, "Resume": 5}
+    df = pd.DataFrame(rows, columns=["Time", "Event", "Job", "Task", "Core", "To core", "By", "Reason", "Text",
+                                     "Since"])
+    if len(df):
+        df["_o"] = df["Event"].map(order)
+        df = df.sort_values(["Time", "_o", "Job"]).drop(columns="_o").reset_index(drop=True)
+        for col in ("Core", "To core", "Since"):
+            df[col] = df[col].astype("Int64")
+    return df

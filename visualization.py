@@ -23,7 +23,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from metrics import cumulative_misses, timeline_segments
+from metrics import cumulative_misses, schedule_events, timeline_segments
 from scheduler import SimulationResult
 
 # validated categorical order (blue, orange, aqua, yellow, magenta, green, violet, red)
@@ -87,6 +87,50 @@ def _miss_points(result: SimulationResult, until: Optional[int] = None):
     return xs, ys, txt
 
 
+def _event_layers(result: SimulationResult, ev: pd.DataFrame, pos: Dict[str, int], job_color: Dict[str, str],
+                  until: Optional[int] = None, xref: str = "x", yref: str = "y",
+                  show_preemptions: bool = True, show_migrations: bool = True):
+    """Preemption markers (with 'by X' label), dotted waiting lines and migration arrows."""
+    if until is not None:
+        ev = ev[ev["Time"] <= until]
+    lab = lambda c: _core_label(result, int(c))
+    traces, arrows = [], []
+    pre = ev[ev["Event"] == "Preemption"] if show_preemptions else ev.iloc[0:0]
+    few = len(pre) <= 40
+    traces.append(go.Scatter(
+        x=list(pre["Time"]), y=[lab(c) for c in pre["Core"]], mode="markers+text" if few else "markers",
+        name="Preemption ▼", text=[f"by {b}" if isinstance(b, str) else "" for b in pre["By"]] if few else None,
+        textposition="top center", textfont=dict(size=10, color="#222"),
+        marker=dict(symbol="triangle-down", size=12, color="#333", line=dict(color="white", width=1)),
+        hovertext=list(pre["Text"]), hovertemplate="<b>PREEMPTION</b> at t=%{x}<br>%{hovertext}<extra></extra>"))
+    res = ev[ev["Event"] == "Resume"] if show_preemptions else ev.iloc[0:0]
+    xs, ys = [], []
+    for _, r in res.iterrows():
+        xs += [int(r["Since"]), int(r["Time"]), None]
+        ys += [lab(r["Core"]), lab(r["Core"]), None]
+    traces.append(go.Scatter(x=xs, y=ys, mode="lines", name="Waiting (preempted)", hoverinfo="skip",
+                             line=dict(color="#888", width=2, dash="dot")))
+    mig = ev[ev["Event"] == "Migration"] if show_migrations else ev.iloc[0:0]
+    for _, r in mig.iterrows():
+        arrows.append(dict(
+            x=int(r["Time"]), y=pos[lab(r["To core"])], ax=int(r["Since"]), ay=pos[lab(r["Core"])],
+            xref=xref, yref=yref, axref=xref, ayref=yref, text="", showarrow=True, arrowhead=2, arrowsize=1.3,
+            arrowwidth=2.2, arrowcolor=job_color.get(r["Job"], "#222"), standoff=3, startstandoff=3,
+            hovertext=f"t={int(r['Time'])}: {r['Text']}"))
+    traces.append(go.Scatter(
+        x=list(mig["Time"]), y=[lab(c) for c in mig["To core"]], mode="markers", name="Migration →",
+        marker=dict(symbol="diamond", size=10, color="white", line=dict(color="#222", width=2)),
+        hovertext=list(mig["Text"]), hovertemplate="<b>MIGRATION</b> at t=%{x}<br>%{hovertext}<extra></extra>"))
+    return traces, arrows
+
+
+def _job_colors(result: SimulationResult, segs: pd.DataFrame, color_by: str) -> Dict[str, str]:
+    if not len(segs):
+        return {}
+    cols = _bar_colors(result, segs, color_by)
+    return dict(zip(segs["Job"], cols))
+
+
 HOVER = ("<b>%{customdata[0]}</b> on %{y}<br>Runs t = %{customdata[1]} → %{customdata[2]}<br>"
          "Release %{customdata[3]} · Deadline %{customdata[4]}<br>%{customdata[6]}<br>"
          "End event: %{customdata[5]}<extra></extra>")
@@ -101,7 +145,8 @@ def _custom(ex: pd.DataFrame):
 
 
 def gantt_chart(result: SimulationResult, show_idle: bool = True, window: Optional[tuple] = None,
-                title: Optional[str] = None, color_by: str = "task") -> go.Figure:
+                title: Optional[str] = None, color_by: str = "task", show_preemptions: bool = True,
+                show_migrations: bool = True) -> go.Figure:
     segs = timeline_segments(result, include_idle=True)
     core_order = [_core_label(result, c) for c in range(result.num_cores)]
     segs["CoreLabel"] = segs["Core"].map(lambda c: _core_label(result, c))
@@ -134,21 +179,15 @@ def gantt_chart(result: SimulationResult, show_idle: bool = True, window: Option
             text=d["Job"], textposition="inside", insidetextanchor="middle", textangle=0,
             textfont=dict(color="white", size=10), customdata=_custom(d), hovertemplate=HOVER,
         ))
-    rt = ex[ex["Kind"] != "A"]
-    mig = ex[ex["Migrated in"]]
-    if len(mig):
-        fig.add_trace(go.Scatter(
-            x=mig["Start"], y=mig["CoreLabel"], mode="markers", name="Migration in",
-            marker=dict(symbol="diamond", size=10, color="white", line=dict(color="#222", width=2)),
-            customdata=mig[["Job"]].values,
-            hovertemplate="<b>Migration</b>: %{customdata[0]} resumes on %{y} at t=%{x}<extra></extra>"))
-    pre = rt[rt["End event"] == "Preempted"]
-    if len(pre):
-        fig.add_trace(go.Scatter(
-            x=pre["End"], y=pre["CoreLabel"], mode="markers", name="Preemption",
-            marker=dict(symbol="triangle-down", size=10, color="#333"),
-            customdata=pre[["Job"]].values,
-            hovertemplate="<b>Preempted</b>: %{customdata[0]} at t=%{x}<extra></extra>"))
+    order = core_order[::-1]
+    pos = {c: i for i, c in enumerate(order)}
+    ev = schedule_events(result)
+    layers, arrows = _event_layers(result, ev, pos, _job_colors(result, ex, color_by),
+                                   show_preemptions=show_preemptions, show_migrations=show_migrations)
+    for tr in layers:
+        if len(tr.x or []):
+            fig.add_trace(tr)
+    fig.update_layout(annotations=arrows)
     mx, my, mt = _miss_points(result)
     if mx:
         fig.add_trace(go.Scatter(
@@ -167,22 +206,27 @@ def gantt_chart(result: SimulationResult, show_idle: bool = True, window: Option
 
 
 def animated_gantt(results: Dict[str, SimulationResult], frame_ms: int = 150, color_by: str = "task",
-                   max_frames: int = 200) -> go.Figure:
+                   max_frames: int = 200, show_preemptions: bool = True, show_migrations: bool = True) -> go.Figure:
     """All chosen algorithms in one figure (one row each), animated in sync.
-    Starts showing the full chart; Play from start / Pause / Resume and a time slider."""
+    Shows bars, deadline misses, preemptions (▼ 'by X', dotted waiting line) and migration arrows as they
+    happen, a live counter and the latest event per algorithm. Starts showing the full chart."""
     res = list(results.values())
     H = max(r.horizon for r in res)
     step = max(1, math.ceil(H / max_frames))
     times = list(range(step, H, step)) + [H]
     heights = [r.num_cores for r in res]
-    fig = make_subplots(rows=len(res), cols=1, shared_xaxes=True, vertical_spacing=0.08,
-                        row_heights=heights, subplot_titles=[f"{r.algorithm} · {r.mode_name}" for r in res])
+    n = len(res)
+    fig = make_subplots(rows=n, cols=1, shared_xaxes=True, vertical_spacing=0.16 if n > 1 else 0.1,
+                        row_heights=heights, subplot_titles=[" "] * n)
     per_alg = []
     for r in res:
         segs = timeline_segments(r, include_idle=False)
         segs["CoreLabel"] = segs["Core"].map(lambda c, r=r: _core_label(r, c))
         segs["Color"] = _bar_colors(r, segs, color_by) if len(segs) else []
-        per_alg.append(segs)
+        order = [_core_label(r, c) for c in range(r.num_cores)][::-1]
+        per_alg.append(dict(segs=segs, ev=schedule_events(r), order=order, pos={c: i for i, c in enumerate(order)},
+                            colors=dict(zip(segs["Job"], segs["Color"])) if len(segs) else {}))
+    title_anns = list(fig.layout.annotations)
 
     def bar_data(segs, tau):
         d = segs[segs["Start"] < tau].copy()
@@ -190,43 +234,67 @@ def animated_gantt(results: Dict[str, SimulationResult], frame_ms: int = 150, co
         d["Duration"] = d["End"] - d["Start"]
         return d
 
-    def traces_at(tau):
-        out = []
-        for r, segs in zip(res, per_alg):
-            d = bar_data(segs, tau)
-            out.append(go.Bar(y=d["CoreLabel"], x=d["Duration"], base=d["Start"], orientation="h",
-                              marker=dict(color=d["Color"], line=dict(color="white", width=1)),
-                              text=d["Job"], textposition="inside", insidetextanchor="middle", textangle=0,
-                              textfont=dict(color="white", size=10), customdata=_custom(d),
-                              hovertemplate=HOVER, showlegend=False))
+    def state_at(tau):
+        traces, anns = [], []
+        for i, (r, a) in enumerate(zip(res, per_alg)):
+            xr, yr = ("x", "y") if i == 0 else (f"x{i + 1}", f"y{i + 1}")
+            d = bar_data(a["segs"], tau)
+            traces.append(go.Bar(y=d["CoreLabel"], x=d["Duration"], base=d["Start"], orientation="h",
+                                 marker=dict(color=d["Color"], line=dict(color="white", width=1)),
+                                 text=d["Job"], textposition="inside", insidetextanchor="middle", textangle=0,
+                                 textfont=dict(color="white", size=10), customdata=_custom(d),
+                                 hovertemplate=HOVER, showlegend=False))
             mx, my, mt = _miss_points(r, until=tau)
-            out.append(go.Scatter(x=mx, y=my, mode="markers", text=mt, showlegend=False,
-                                  marker=dict(symbol="x", size=13, color=MISS_COLOR, line=dict(width=1, color="white")),
-                                  hovertemplate="<b>DEADLINE MISS</b><br>%{text}<extra></extra>"))
-        return out
+            traces.append(go.Scatter(x=mx, y=my, mode="markers", text=mt, showlegend=False,
+                                     marker=dict(symbol="x", size=13, color=MISS_COLOR,
+                                                 line=dict(width=1, color="white")),
+                                     hovertemplate="<b>DEADLINE MISS</b><br>%{text}<extra></extra>"))
+            layers, arrows = _event_layers(r, a["ev"], a["pos"], a["colors"], until=tau, xref=xr, yref=yr,
+                                           show_preemptions=show_preemptions, show_migrations=show_migrations)
+            for tr in layers:
+                tr.showlegend = False
+                traces.append(tr)
+            anns += arrows
+            ev = a["ev"][a["ev"]["Time"] <= tau]
+            npre = int((ev["Event"] == "Preemption").sum())
+            nmig = int((ev["Event"] == "Migration").sum())
+            nmiss = int((ev["Event"] == "Deadline miss").sum())
+            key = ev[ev["Event"].isin(["Preemption", "Migration", "Deadline miss"])]
+            last = (f"t={int(key['Time'].iloc[-1])}: {key['Text'].iloc[-1]}" if len(key)
+                    else "no preemption or migration yet")
+            t_ann = dict(title_anns[i].to_plotly_json())
+            t_ann["text"] = (f"<b>{r.algorithm} · {r.mode_name}</b>  —  t = {tau} · preemptions {npre} · "
+                             f"migrations {nmig} · misses {nmiss}<br><span style='font-size:11px'>{last}</span>")
+            anns.append(t_ann)
+        return traces, anns
 
     def cursor(tau):
         return [dict(type="line", x0=tau, x1=tau, xref=f"x{i + 1}" if i else "x", y0=0, y1=1,
                      yref=f"y{i + 1} domain" if i else "y domain", line=dict(color=MISS_COLOR, width=2, dash="dot"))
-                for i in range(len(res))]
+                for i in range(n)]
 
-    for i, tr in enumerate(traces_at(H)):
-        fig.add_trace(tr, row=i // 2 + 1, col=1)
-    for i, r in enumerate(res):
-        order = [_core_label(r, c) for c in range(r.num_cores)][::-1]
-        fig.update_yaxes(categoryorder="array", categoryarray=order, row=i + 1, col=1, gridcolor=GRID)
+    full_traces, full_anns = state_at(H)
+    per = len(full_traces) // n
+    for k, tr in enumerate(full_traces):
+        fig.add_trace(tr, row=k // per + 1, col=1)
+    for i, (r, a) in enumerate(zip(res, per_alg)):
+        fig.update_yaxes(categoryorder="array", categoryarray=a["order"], row=i + 1, col=1, gridcolor=GRID)
         fig.update_xaxes(range=[0, H], gridcolor=GRID, row=i + 1, col=1)
-    fig.update_xaxes(title="Time (units)", row=len(res), col=1)
-    fig.frames = [go.Frame(name=str(t), data=traces_at(t), layout=dict(shapes=cursor(t)),
-                           traces=list(range(2 * len(res)))) for t in times]
+    fig.update_xaxes(title="Time (units)", row=n, col=1)
+    frames = []
+    for t in times:
+        tr, an = state_at(t)
+        frames.append(go.Frame(name=str(t), data=tr, layout=dict(shapes=cursor(t), annotations=an),
+                               traces=list(range(len(full_traces)))))
+    fig.frames = frames
     anim = dict(frame=dict(duration=frame_ms, redraw=True), transition=dict(duration=0), mode="immediate",
                 fromcurrent=True)
     fig.update_layout(
-        barmode="overlay", bargap=0.3, height=170 + sum(44 * h + 50 for h in heights),
-        margin=dict(l=10, r=10, t=110, b=40), plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        uniformtext=dict(mode="hide", minsize=8),
-        updatemenus=[dict(type="buttons", direction="left", x=0, y=1.13, xanchor="left", yanchor="bottom",
-                          pad=dict(r=6), showactive=False, buttons=[
+        barmode="overlay", bargap=0.3, height=200 + sum(44 * h + 80 for h in heights),
+        margin=dict(l=10, r=10, t=130, b=40), plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        uniformtext=dict(mode="hide", minsize=8), showlegend=False,
+        updatemenus=[dict(type="buttons", direction="left", x=0, y=1.0, xanchor="left", yanchor="bottom",
+                          pad=dict(b=70, r=6), showactive=False, buttons=[
                               dict(label="⏮ Play from start", method="animate",
                                    args=[[str(t) for t in times], {**anim, "fromcurrent": False}]),
                               dict(label="⏸ Pause", method="animate",
@@ -241,6 +309,7 @@ def animated_gantt(results: Dict[str, SimulationResult], frame_ms: int = 150, co
                                                        transition=dict(duration=0))]) for t in times])],
         shapes=cursor(H),
     )
+    fig.layout.annotations = full_anns          # replace (not merge) the subplot-title placeholders
     return fig
 
 
