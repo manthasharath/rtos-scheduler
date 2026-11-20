@@ -274,7 +274,10 @@ def validate_task_table(df: pd.DataFrame) -> Tuple[List[Task], List[str], List[s
         if kind == "A":
             c = _as_int(row["C"], "C (execution time)", row_label, errors)
             a = _as_int(row["Arrival"], "Arrival", row_label, errors, minimum=0)
-            ignored = [col for col in ("T", "D", "Priority", "Criticality") if not _blank(row[col])]
+            if not _blank(row["Criticality"]):
+                errors.append(f"{row_label}: aperiodic jobs have no criticality. Leave Criticality empty, or change "
+                              "Type to S (sporadic) to give it a deadline and a criticality.")
+            ignored = [col for col in ("T", "D", "Priority") if not _blank(row[col])]
             if ignored:
                 warnings.append(f"{row_label}: aperiodic job - {', '.join(ignored)} not used (only C and Arrival).")
             if None in (c, a) or not name:
