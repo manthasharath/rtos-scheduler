@@ -135,3 +135,17 @@ def test_example_claims():
         assert high == 0 and guar == "YES"
         assert _misses(DEFAULT_EXAMPLE, alg, False)[0] == 0
         assert _misses(DEFAULT_EXAMPLE, alg, True)[1] == 0
+
+
+def test_fields_not_used_are_cleared():
+    from task_model import clean_task_table
+    df = pd.DataFrame({"Name": ["T1", "Diag"], "Type": ["P", "A"], "C": [1, 3], "T": [10, 10],
+                       "D": [10, 5], "Priority": [None, 2], "Criticality": ["Low", "High"],
+                       "Arrival": [4, 5]})
+    clean, notes = clean_task_table(df)
+    assert len(notes) == 2
+    assert pd.isna(clean.loc[0, "Arrival"])
+    assert all(pd.isna(clean.loc[1, c]) for c in ["T", "D", "Priority", "Criticality"])
+    assert int(clean.loc[1, "Arrival"]) == 5
+    tasks, errors, warnings = validate_task_table(clean)
+    assert not errors and not warnings and len(tasks) == 2

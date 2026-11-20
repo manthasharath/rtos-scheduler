@@ -36,7 +36,8 @@ from export_results import to_excel_bytes
 from metrics import (aperiodic_table, comparison_table, compute_metrics, criticality_metrics, high_check_table,
                      job_table, mode_comparison, task_metrics, timeline_segments)
 from task_generator import generate_taskset
-from task_model import (MAX_CORES, MAX_TASKS, TASK_COLUMNS, fill_priorities, hyperperiod, read_task_csv,
+from task_model import (MAX_CORES, MAX_TASKS, TASK_COLUMNS, clean_task_table, display_table, fill_priorities,
+                        hyperperiod, read_task_csv,
                         tasks_to_dataframe, total_density, total_utilization, validate_task_table)
 
 MAX_HORIZON = 5000
@@ -269,10 +270,12 @@ def load_tasks_csv(s: Session):
             print(f"  ! File not found: {os.path.abspath(path)}")
             continue
         try:
-            df = read_task_csv(path)
+            df, notes = clean_task_table(read_task_csv(path))
         except Exception as exc:                      # noqa: BLE001 - show any read problem
             print(f"  ! Could not read the CSV: {exc}")
             continue
+        for n in notes:
+            print("  note: " + n)
         s.tasks_df = df
         s.source = f"CSV: {path}"
         return
@@ -362,9 +365,8 @@ def show_tasks(s: Session, edit=True):
     while True:
         header(f"5. TASK SET  ({s.source})   cores = {s.cores}, cluster = {s.cluster}")
         df = fill_priorities(s.tasks_df)
-        view = df.copy()
-        view.index = range(1, len(view) + 1)
-        print(view.fillna("").to_string())
+        print(display_table(df).to_string())
+        print(" (— = not used by that task type)")
         tasks, errors, warnings = validate_task_table(df)
         for w in warnings:
             print(" warning: " + w)

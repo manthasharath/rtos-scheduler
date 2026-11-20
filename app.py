@@ -22,7 +22,8 @@ from export_results import to_csv_bytes, to_excel_bytes
 from metrics import (aperiodic_table, comparison_table, compute_metrics, criticality_metrics, high_check_table,
                      job_table, mode_comparison, task_metrics, timeline_segments)
 from task_generator import generate_taskset
-from task_model import (MAX_CORES, MAX_TASKS, TASK_COLUMNS, fill_priorities, hyperperiod, read_task_csv,
+from task_model import (MAX_CORES, MAX_TASKS, TASK_COLUMNS, clean_task_table, display_table, fill_priorities,
+                        hyperperiod, read_task_csv,
                         tasks_to_dataframe, total_density, total_utilization, validate_task_table)
 from visualization import (ALGO_COLORS, animated_gantt, criticality_bar, cumulative_miss_chart, gantt_chart,
                            gantt_from_trace, hw_overhead_chart, level_line_chart, metric_bar, per_core_util_chart,
@@ -91,7 +92,7 @@ def init_state():
 
 def set_tasks(df: pd.DataFrame, source: str, cores=None, cluster=None):
     ss = st.session_state
-    ss.tasks_df = fill_priorities(df)
+    ss.tasks_df = fill_priorities(clean_task_table(df)[0])
     ss.source = source
     if cores:
         ss.cfg["cores"] = cores
@@ -232,34 +233,106 @@ def page_home():
             "conclusive; for Global and Clustered EDF a miss-free run is not a proof.")
 
 
+def _int(v, default):
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return default
+
+
+TYPE_LABEL = {"P": "Periodic (P)", "S": "Sporadic (S)", "A": "Aperiodic (A)"}
+
+
+def task_fields(key: str, row, default_name: str) -> dict:
+    """Entry boxes for one task. Type first; only the boxes that type uses are shown."""
+    kind0 = str(row["Type"]).upper() if row is not None else "P"
+    kind = st.radio("Type", ["P", "S", "A"], index=["P", "S", "A"].index(kind0 if kind0 in "PSA" else "P"),
+                    format_func=TYPE_LABEL.get, horizontal=True, key=f"{key}_type")
+    k = f"{key}_{kind}"
+    get = (lambda c, d: _int(row[c], d)) if row is not None else (lambda c, d: d)
+    name = st.text_input("Name (no spaces or commas)", row["Name"] if row is not None else default_name,
+                         key=f"{k}_name").strip()
+    if kind == "A":
+        st.caption("Aperiodic job: one job at its arrival time, served in the background on idle cores. "
+                   "It has no period, deadline, priority or criticality.")
+        a, b = st.columns(2)
+        c = a.number_input("C = execution time", 1, 10000, get("C", 2), key=f"{k}_C")
+        arr = b.number_input("Arrival time", 0, 100000, get("Arrival", 0), key=f"{k}_arr")
+        return {"Name": name, "Type": "A", "C": int(c), "T": None, "D": None, "Priority": None,
+                "Criticality": None, "Arrival": int(arr)}
+    st.caption("Periodic: a new job every T." if kind == "P" else
+               "Sporadic: events at least T apart (plus a random extra gap set on 3 · Run).")
+    a, b, c_, d, e = st.columns(5)
+    c = a.number_input("C = execution time", 1, 10000, get("C", 1), key=f"{k}_C")
+    t = b.number_input("T = period" if kind == "P" else "T = minimum gap", 1, 100000, get("T", 10), key=f"{k}_T")
+    dl = c_.number_input("D = deadline (C ≤ D ≤ T)", 1, 100000, get("D", int(t)), key=f"{k}_D")
+    pr = d.number_input("Priority (0 = automatic)", 0, 999, get("Priority", 0) if row is not None else 0,
+                        key=f"{k}_P", help="1 = highest. Only breaks ties of equal deadline and criticality.")
+    crit0 = str(row["Criticality"]) if row is not None and str(row["Criticality"]) in ("High", "Medium", "Low") else "Low"
+    cr = e.selectbox("Criticality", ["High", "Medium", "Low"], index=["High", "Medium", "Low"].index(crit0),
+                     key=f"{k}_crit")
+    return {"Name": name, "Type": kind, "C": int(c), "T": int(t), "D": int(dl), "Priority": int(pr) or None,
+            "Criticality": cr, "Arrival": None}
+
+
+def try_save(new_df: pd.DataFrame, old_df: pd.DataFrame, source: str) -> bool:
+    """Save only if the change adds no new error."""
+    _, before, _ = validate_task_table(old_df)
+    _, after, _ = validate_task_table(new_df)
+    added = [e for e in after if e not in before]
+    if added:
+        st.error("Not saved:\n\n- " + "\n- ".join(added))
+        return False
+    set_tasks(new_df, source)
+    return True
+
+
 def task_editor(key_prefix: str):
-    """Editable task table shared by Setup and Review."""
+    """Task table (view only) + a form to add, edit or delete tasks."""
     ss = st.session_state
-    df = ss.tasks_df.copy()
-    for c in ["C", "T", "D", "Priority", "Arrival"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
-    edited = st.data_editor(
-        df, num_rows="dynamic", width="stretch", hide_index=False,
-        key=f"{key_prefix}_{ss.editor_version}",
-        column_config={
-            "Name": st.column_config.TextColumn("Name", help="No spaces or commas", required=True),
-            "Type": st.column_config.SelectboxColumn("Type", options=["P", "S", "A"], required=True,
-                                                     help="P periodic · S sporadic · A aperiodic"),
-            "C": st.column_config.NumberColumn("C", min_value=1, step=1, help="Execution time (WCET)"),
-            "T": st.column_config.NumberColumn("T", min_value=1, step=1, help="Period / minimum gap (P, S)"),
-            "D": st.column_config.NumberColumn("D", min_value=1, step=1, help="Relative deadline (P, S)"),
-            "Priority": st.column_config.NumberColumn("Priority", min_value=1, step=1,
-                                                      help="1 = highest. Empty = automatic (shorter period first)"),
-            "Criticality": st.column_config.SelectboxColumn("Criticality", options=["High", "Medium", "Low"]),
-            "Arrival": st.column_config.NumberColumn("Arrival", min_value=0, step=1, help="Aperiodic jobs only"),
-        })
+    df = fill_priorities(ss.tasks_df).reset_index(drop=True)
+    st.dataframe(display_table(df), width="stretch")
+    st.caption("— = not used by that task type (aperiodic: only C and Arrival; periodic/sporadic: no Arrival). "
+               "Priority is filled automatically by period when left empty.")
+    src = ss.source if "edited" in ss.source else ss.source + " (edited)"
+    v = ss.editor_version
+    action = st.radio("Change the table", ["➕ Add a task", "✏️ Edit a task", "🗑️ Delete tasks"], horizontal=True,
+                      key=f"{key_prefix}_act")
+    with st.container(border=True):
+        if action.startswith("➕"):
+            if len(df) >= MAX_TASKS:
+                st.warning(f"At most {MAX_TASKS} tasks.")
+            else:
+                row = task_fields(f"{key_prefix}_add{v}", None, f"T{len(df) + 1}")
+                if st.button("Add task", type="primary", key=f"{key_prefix}_addbtn"):
+                    new = pd.concat([df, pd.DataFrame([row], columns=TASK_COLUMNS)], ignore_index=True)
+                    if try_save(new, df, src):
+                        st.rerun()
+        elif action.startswith("✏️"):
+            if not len(df):
+                st.info("The table is empty.")
+            else:
+                i = st.selectbox("Task to edit", range(len(df)), format_func=lambda j: f"{j + 1}. {df.at[j, 'Name']}",
+                                 key=f"{key_prefix}_pick")
+                row = task_fields(f"{key_prefix}_ed{v}_{i}", df.loc[i], str(df.at[i, "Name"]))
+                if st.button("Update task", type="primary", key=f"{key_prefix}_updbtn"):
+                    new = df.copy().astype(object)
+                    new.loc[i] = [row[c] for c in TASK_COLUMNS]
+                    if try_save(new, df, src):
+                        st.rerun()
+        else:
+            drop = st.multiselect("Tasks to delete", range(len(df)), format_func=lambda j: f"{j + 1}. {df.at[j, 'Name']}",
+                                  key=f"{key_prefix}_del{v}")
+            if st.button("Delete", type="primary", disabled=not drop, key=f"{key_prefix}_delbtn"):
+                set_tasks(df.drop(index=drop).reset_index(drop=True), src)
+                st.rerun()
     c1, c2, _ = st.columns([1, 1, 3])
-    if c1.button("💾 Save table", key=f"{key_prefix}_save", type="primary"):
-        set_tasks(edited, (ss.source if "edited" in ss.source else ss.source + " (edited)"))
-        st.rerun()
-    if c2.button("↺ Automatic priorities", key=f"{key_prefix}_auto",
+    if c1.button("↺ Automatic priorities", key=f"{key_prefix}_auto",
                  help="Fill every P/S priority by period (shorter period = 1)"):
-        set_tasks(fill_priorities(edited, overwrite=True), ss.source)
+        set_tasks(fill_priorities(df, overwrite=True), ss.source)
+        st.rerun()
+    if c2.button("🧹 Clear all tasks", key=f"{key_prefix}_clear"):
+        set_tasks(pd.DataFrame(columns=TASK_COLUMNS), "Manual entry")
         st.rerun()
 
 
@@ -280,24 +353,19 @@ def page_setup():
                                                for i, c in enumerate(make_clusters(cfg["cores"], cfg["cluster"]))))
 
     st.subheader("Tasks")
-    t1, t2, t3, t4 = st.tabs(["⭐ Built-in example", "✏️ Manual table", "📄 CSV file", "🎲 Random (UUniFast)"])
+    t1, t2, t3, t4 = st.tabs(["⭐ Built-in example", "✏️ Enter tasks", "📄 CSV file", "🎲 Random (UUniFast)"])
     with t1:
         name = st.selectbox("Example", list(EXAMPLES), index=list(EXAMPLES).index(DEFAULT_EXAMPLE))
         ex = EXAMPLES[name]
         st.caption(f"{ex['cores']} cores · cluster {ex['cluster']}")
         st.markdown(ex["description"])
-        st.dataframe(ex["df"], hide_index=True, width="stretch")
+        st.dataframe(display_table(ex["df"]), width="stretch")
         if st.button("Load this example", type="primary"):
             set_tasks(ex["df"], f"Example: {name}", ex["cores"], ex["cluster"])
             st.rerun()
     with t2:
-        st.caption("Edit the current table directly. Add rows with the + below the table. "
-                   "Aperiodic rows (Type A) only need C and Arrival.")
-        a, b = st.columns([1, 4])
-        if a.button("Start an empty table"):
-            set_tasks(pd.DataFrame([{"Name": "T1", "Type": "P", "C": 1, "T": 10, "D": 10, "Priority": None,
-                                     "Criticality": "Low", "Arrival": None}], columns=TASK_COLUMNS), "Manual entry")
-            st.rerun()
+        st.caption("Choose the Type first: only the boxes for that type appear. "
+                   "Use 🧹 Clear all tasks to start from an empty table.")
         task_editor("setup_editor")
     with t3:
         st.markdown("Columns: `Name,Type,C,T,D,Priority,Criticality,Arrival`  "
@@ -306,8 +374,10 @@ def page_setup():
         up = st.file_uploader("Upload a task CSV", type=["csv"])
         if up is not None:
             try:
-                df = read_task_csv(up)
-                st.dataframe(df, hide_index=True, width="stretch")
+                df, notes = clean_task_table(read_task_csv(up))
+                st.dataframe(display_table(df), width="stretch")
+                for n in notes:
+                    st.info(n)
                 if st.button("Use this file", type="primary"):
                     set_tasks(df, f"CSV: {up.name}")
                     st.rerun()
