@@ -38,7 +38,7 @@ CRIT_RANK = {"Low": 1, "Medium": 2, "High": 3}
 TASK_TYPES = ["P", "S", "A"]
 TYPE_NAMES = {"P": "Periodic", "S": "Sporadic", "A": "Aperiodic"}
 MAX_CORES = 20
-MAX_TASKS = 200
+MAX_TASKS = 60
 TASK_COLUMNS = ["Name", "Type", "C", "T", "D", "Priority", "Criticality", "Arrival"]
 
 
@@ -312,53 +312,6 @@ def validate_task_table(df: pd.DataFrame) -> Tuple[List[Task], List[str], List[s
         warnings.append(f"The hyperperiod is {hp} time units; the horizon will be capped. Periods with common "
                         "factors (5, 10, 20, 25, 50, 100) keep it small.")
     return tasks, errors, warnings
-
-
-NOT_USED = {"A": ("T", "D", "Priority", "Criticality"), "P": ("Arrival",), "S": ("Arrival",)}
-NOT_USED_REASON = {"A": "aperiodic jobs have no period, deadline, priority or criticality",
-                   "P": "periodic tasks always start at time 0",
-                   "S": "sporadic tasks always start at time 0"}
-
-
-def clean_task_table(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-    """
-    Empty the fields that do not belong to a task's type (used for CSV files and
-    the website table): Type A keeps only Name, C, Arrival; P and S never use Arrival.
-    Returns (cleaned table, notes saying what was removed).
-    """
-    df = normalize_table(df).reset_index(drop=True)
-    notes: List[str] = []
-    for i, row in df.iterrows():
-        kind = str(row["Type"]).strip().upper() if not _blank(row["Type"]) else "P"
-        cols = [c for c in NOT_USED.get(kind, ()) if not _blank(row[c])]
-        if cols:
-            for c in cols:
-                df.at[i, c] = None
-            notes.append(f"{row['Name']} ({TYPE_NAMES.get(kind, kind)}): {', '.join(cols)} removed - "
-                         f"{NOT_USED_REASON[kind]}.")
-    return df, notes
-
-
-def display_table(df: pd.DataFrame) -> pd.DataFrame:
-    """Copy for showing on screen: whole numbers, and '—' where a field is not used by that task type."""
-    out = normalize_table(df).reset_index(drop=True).astype(object)
-    for i, row in out.iterrows():
-        kind = str(row["Type"]).strip().upper() if not _blank(row["Type"]) else "P"
-        for c in TASK_COLUMNS:
-            v = row[c]
-            if c in NOT_USED.get(kind, ()):
-                out.at[i, c] = "—"
-            elif _blank(v):
-                out.at[i, c] = ""
-            elif c in ("C", "T", "D", "Priority", "Arrival"):
-                try:
-                    out.at[i, c] = str(int(float(v)))
-                except (TypeError, ValueError):
-                    out.at[i, c] = str(v)
-            else:
-                out.at[i, c] = str(v)
-    out.index = range(1, len(out) + 1)
-    return out
 
 
 def read_task_csv(path_or_buffer) -> pd.DataFrame:
