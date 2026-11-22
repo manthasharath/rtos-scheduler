@@ -61,7 +61,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#define MAX_TASKS   200
+#define MAX_TASKS   60
 #define MAX_CORES   20
 #define MAX_HORIZON 5000
 #define EPS         1e-9

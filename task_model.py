@@ -38,7 +38,7 @@ CRIT_RANK = {"Low": 1, "Medium": 2, "High": 3}
 TASK_TYPES = ["P", "S", "A"]
 TYPE_NAMES = {"P": "Periodic", "S": "Sporadic", "A": "Aperiodic"}
 MAX_CORES = 20
-MAX_TASKS = 200
+MAX_TASKS = 60
 TASK_COLUMNS = ["Name", "Type", "C", "T", "D", "Priority", "Criticality", "Arrival"]
 
 
