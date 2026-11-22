@@ -61,7 +61,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#define MAX_TASKS   60
+#define MAX_TASKS   200
 #define MAX_CORES   20
 #define MAX_HORIZON 5000
 #define EPS         1e-9
@@ -425,6 +425,10 @@ static int parse_row(char **f, int n, Task *t, char *err, const Task *ts, int nt
     }
     if ((r = parse_int_field(fld[2], &C)) != 1 || C < 1) { strcpy(err, "C must be a whole number >= 1"); return 0; }
     if (kind == 'A') {
+        if (fld[3][0] || fld[4][0] || fld[5][0] || fld[6][0])
+            printf("  note: %s (aperiodic): %s%s%s%sremoved - aperiodic jobs have no period, deadline, priority or "
+                   "criticality.\n", fld[0], fld[3][0] ? "T " : "", fld[4][0] ? "D " : "", fld[5][0] ? "Priority " : "",
+                   fld[6][0] ? "Criticality " : "");
         if ((r = parse_int_field(fld[7], &A)) != 1 || A < 0) { strcpy(err, "aperiodic job needs Arrival >= 0"); return 0; }
         set_task(t, fld[0], 'A', C, 0, 0, 0, "", A);
         return 1;
@@ -437,6 +441,9 @@ static int parse_row(char **f, int n, Task *t, char *err, const Task *ts, int nt
     if ((cf = crit_full(fld[6])) == NULL) { strcpy(err, "Criticality must be High, Medium or Low"); return 0; }
     if (C > D) { sprintf(err, "C=%d is larger than D=%d; every job would miss. Make C <= D.", C, D); return 0; }
     if (D > T) { sprintf(err, "D=%d is larger than T=%d. Deadlines must satisfy D <= T.", D, T); return 0; }
+    if (fld[7][0])
+        printf("  note: %s (%s): Arrival removed - periodic and sporadic tasks always start at time 0.\n", fld[0],
+               kind == 'S' ? "sporadic" : "periodic");
     set_task(t, fld[0], kind, C, T, D, P, cf, 0);
     return 1;
 }
@@ -1450,15 +1457,15 @@ static void print_taskset(void)
     for (i = 0; i < ntasks; i++) {
         Task *t = &tasks[i];
         if (t->kind == 'A') {
-            printf(" %3d %-16s %4s %5d %5s %5s %8s %-8s %7d %6s\n", i + 1, t->name, "A", t->C, "", "", "", "",
-                   t->arrival, "");
+            printf(" %3d %-16s %4s %5d %5s %5s %8s %-8s %7d %6s\n", i + 1, t->name, "A", t->C, "-", "-", "-", "-",
+                   t->arrival, "-");
             continue;
         }
         nrt++;
         U += (double)t->C / t->T;
         if (t->crit_rank == 3) { nh++; UH += (double)t->C / t->T; }
         printf(" %3d %-16s %4c %5d %5d %5d %8d %-8s %7s %6.3f\n", i + 1, t->name, t->kind, t->C, t->T, t->D,
-               t->prio, t->crit, "", (double)t->C / t->T);
+               t->prio, t->crit, "-", (double)t->C / t->T);
     }
     printf(" Real-time tasks %d, aperiodic jobs %d.  U = %.3f  ->  %.1f %% of %d cores.  Hyperperiod = %d\n",
            nrt, ntasks - nrt, U, 100.0 * U / m, m, hyperperiod());
