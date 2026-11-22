@@ -628,7 +628,7 @@ def page_batch():
                "Recommended for the report: 4 cores and 8 cores, 7 levels × 50 sets = 350 sets each.")
     a, b, c, d = st.columns(4)
     cores = a.selectbox("Cores", [2, 4, 8, 10, 16, 20], index=1)
-    cluster = b.selectbox("Cluster size", [k for k in [1, 2, 4, 8] if k <= cores], index=1 if cores >= 2 else 0)
+    cluster = b.selectbox("Cluster size", list(range(1, cores + 1)), index=1 if cores >= 2 else 0)
     n = c.number_input("Tasks per set", cores + 1, MAX_TASKS, max(cores + 4, 8))
     per = d.number_input("Sets per level", 1, 500, 50)
     levels = st.multiselect("Utilization levels U/m", [round(x, 2) for x in np.arange(0.1, 1.01, 0.05)],
@@ -642,11 +642,22 @@ def page_batch():
     total = len(levels) * per
     st.caption(f"{total} task sets × 3 algorithms × {len(mode_tuple)} mode(s) = "
                f"{total * 3 * len(mode_tuple)} simulations")
+    if levels and int(n) < 2 * max(levels) * int(cores):
+        st.warning(f"With {int(cores)} cores and U/m up to {max(levels)}, the total load is "
+                   f"{max(levels) * int(cores):.1f}. {int(n)} tasks per set is probably too few for the generator "
+                   f"(every task must stay at or below 100 % of a core); about {int(2 * max(levels) * int(cores)) + 1} "
+                   f"or more is safer.")
     if st.button("▶ Run batch", type="primary", disabled=not levels):
         bar = st.progress(0.0, "Running…")
-        out = run_batch(int(n), int(cores), sorted(levels), int(per), int(seed), int(cluster),
-                        ss.cfg["miss_policy"], modes=mode_tuple, progress=lambda x: bar.progress(min(x, 1.0)),
-                        sporadic_frac=sp / 100, n_aperiodic=int(na), gap_pct=ss.cfg["gap_pct"])
+        try:
+            out = run_batch(int(n), int(cores), sorted(levels), int(per), int(seed), int(cluster),
+                            ss.cfg["miss_policy"], modes=mode_tuple, progress=lambda x: bar.progress(min(x, 1.0)),
+                            sporadic_frac=sp / 100, n_aperiodic=int(na), gap_pct=ss.cfg["gap_pct"])
+        except (RuntimeError, ValueError) as err:
+            bar.empty()
+            st.error(f"Could not generate the task sets: {err} Increase 'Tasks per set', remove the highest "
+                     f"U/m levels, or use fewer cores.")
+            return
         label = f"{cores} cores · k={cluster} · {n} tasks · {modes} · {datetime.now():%H:%M:%S}"
         out["settings"] = pd.DataFrame([{"Cores": cores, "Cluster size": cluster, "Tasks per set": n,
                                          "Levels": ", ".join(map(str, sorted(levels))), "Sets per level": per,
